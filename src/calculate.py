@@ -1,141 +1,122 @@
-import datetime
 import os
 import re
-from typing import Any, Dict, Iterator
+from typing import Any, Dict
 
-from dotenv import load_dotenv
-from datetime import datetime, timezone
-from models import Repository, PullRequest, File
-from services import GithubService, CsvService
+from models import Repository, PullRequest
+from services import GithubService, CsvService, MongoService, SqlService
 
-load_dotenv()
-
-GITHUB_TOKEN = os.getenv("GITHUB_AUTH_TOKEN")
+GITHUB_TOKEN = str(os.getenv("GITHUB_AUTH_TOKEN") or "").strip()
 githubService = GithubService(GITHUB_TOKEN)
 csvService = CsvService()
+mongoService: MongoService | None = None
+sqlService: SqlService | None = None
 
-def convert_to_datetime(date: str) -> datetime:
-    if date.endswith('Z'):
-        parsed = datetime.fromisoformat(date.replace('Z', '+00:00'))
-    else:
-        parsed = datetime.fromisoformat(date)
+def as_bool(value: str | bool | None) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in ("true", "1", "yes", "y")
 
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
 
-    return parsed
+def csv_repo_name_to_full_name(repo_name: str) -> str:
+    if "/" in repo_name:
+        return repo_name
 
-def calculate_test_engagement_ratio(merged_prs: Iterator[PullRequest], info: Dict[str, Any]):
-    count_touches_tests = 0
-    count_touches_production = 0
+    parts = repo_name.split("_", 1)
+    if len(parts) != 2:
+        return repo_name
 
-    for pr in merged_prs:
-        if pr.get('touches_test_files') == 'True' and pr.get('touches_production_files') == 'True':
-            count_touches_tests += 1
-        if pr.get('touches_production_files') == 'True':
-            count_touches_production += 1
+    return f"{parts[0]}/{parts[1]}"
 
-    ter = (count_touches_tests / count_touches_production) if count_touches_production > 0 else None
+def get_pr_type(touches_test_files: bool, touches_production_files: bool) -> str:
+    if touches_test_files and touches_production_files:
+        return "test_including"
+    if touches_production_files:
+        return "test_excluding"
+    return "no_production_code"
 
-    info['test_engagement_ratio'] = ter
-    info['count_touches_tests'] = count_touches_tests
-    info['count_touches_production'] = count_touches_production
-
-def which_files_were_touched(pr: PullRequest) -> Dict[str, bool]:
-    touches_test_files = False
-    touches_production_files = False
-
-    try:
-        files: list[File] = githubService.get_files(pr)
-
-        for f in files:
-            if f.is_test_file():
-                touches_test_files = True
-            elif f.is_production_file():
-                touches_production_files = True
-
-            if touches_test_files and touches_production_files:
-                break
-    except Exception as e:
-        csvService.write_error_log(f"Error processing PR #{pr.number} in repo {pr.base.repo.full_name}: {str(e)}")
-
-    return {'touches_test_files': touches_test_files, 'touches_production_files': touches_production_files}
-
-def get_merged_prs(repo: Repository, 
-                   start_date: datetime = datetime(2025, 1, 1, 0, 0, tzinfo=timezone.utc), 
-                   end_date: datetime = datetime(2025, 12, 1, 0, 0, tzinfo=timezone.utc)):
+def save_pull_request_data(repo: Repository, pr: PullRequest, pr_type: str) -> None:
+    global mongoService, sqlService
 
     try:
-        prs: Iterator[PullRequest] = githubService.get_pull_requests(repo, state='closed')
+        if mongoService is None:
+            mongoService = MongoService()
+        if sqlService is None:
+            sqlService = SqlService()
+
+        comments = githubService.get_pull_request_comments(pr)
+        commit_messages = githubService.get_pull_request_commit_messages(pr)
+
+        github_pull_request_id = pr.number if pr.number is not None else pr.id
+        if github_pull_request_id is None:
+            print(
+                f"Skipping PR with missing GitHub id in repo {repo.full_name}"
+            )
+            return
+
+        sql_record = sqlService.save_pull_request_mapping(
+            repository_name=repo.get_sanitized_name(),
+            github_pull_request_id=int(github_pull_request_id),
+            pr_type=pr_type,
+        )
+
+        mongoService.save({
+            'repo_name': repo.get_sanitized_name(),
+            'internal_pull_request_id': github_pull_request_id,
+            'pull_request_id': github_pull_request_id,
+            'title': pr.title,
+            'description': pr.body,
+            'comments': comments,
+            'commit_messages': commit_messages,
+        })
     except Exception as e:
-        csvService.write_error_log(f"Error fetching PRs for repo {repo.full_name}: {str(e)}")
-        return
+        print(f"Error saving PR data for PR #{pr.number} in repo {repo.full_name}: {str(e)}")
 
-    for pr in prs:
-        try:
-            # Already been processed
-            # Not merged
-            if pr.merge_commit_sha is None:
-                data = {
-                        'repo_name': repo.get_sanitized_name(),
-                        'number': pr.number,
-                        'touches_test_files': False,
-                        'touches_production_files': False,
-                        'notes': 'not merged'
-                        }
-                # TODO: write to sql
-                # csvService.save_csv_row(checkpoint_path, data)
-                continue
 
-            if pr.merged_at is None:
-                merged_at = convert_to_datetime(pr.closed_at)
-            else:
-                merged_at = convert_to_datetime(pr.merged_at)
-            
-            # Before start date
-            if merged_at < start_date:
-                break
-            # Within date range
-            elif start_date <= merged_at <= end_date:
-                results = which_files_were_touched(pr)
-                data = {
-                        'repo_name': repo.get_sanitized_name(),
-                        'number': pr.number,
-                        'touches_test_files': results['touches_test_files'],
-                        'touches_production_files': results['touches_production_files'],
-                        'notes': None
-                        }
-                # TODO: write to sql
-                # csvService.save_csv_row(checkpoint_path, data)
-        except Exception as e:
-            csvService.write_error_log(f"Error processing PR #{pr.number} in repo {repo.full_name}: {str(e)}")
-    
-def get_repo_full_name(url: str) -> str:
-    match = re.search(r'github\.com/([^/?]+/[^/?]+)', url)
-    if match:
-        return match.group(1)
-    return ""
+def process_prs_csv(csv_path: str) -> None:
+    rows = csvService.read_csv(csv_path)
 
-if __name__ == "__main__":
-    repos = ['']
-    
-    for repo_info in repos:
-        repo_name = get_repo_full_name(repo_info['GitHub'])
-        repo = githubService.get_repository(repo_name)
+    repo_cache: Dict[str, Repository | None] = {}
 
-        if repo is None:
+    for row in rows:
+        repo_name = str(row.get("repo_name", "")).strip()
+        pull_request_number_raw = str(row.get("number", "")).strip()
+
+        if repo_name == "" or pull_request_number_raw == "":
+            print(f"Skipping malformed CSV row: {row}")
             continue
 
-        info = repo.to_dict()
+        try:
+            pull_request_number = int(pull_request_number_raw)
+        except ValueError:
+            print(f"Skipping row with invalid PR number: {row}")
+            continue
 
-        get_merged_prs(repo)
-            
-        merged_prs = []
+        full_repo_name = csv_repo_name_to_full_name(repo_name)
 
-        calculate_test_engagement_ratio(merged_prs, info)
+        if full_repo_name not in repo_cache:
+            print(f"Loading repository data for {full_repo_name} from GitHub...")
+            repo_cache[full_repo_name] = githubService.get_repository(full_repo_name)
 
-        csvService.save_csv_row('output.csv', info)
+        repo = repo_cache[full_repo_name]
+        if repo is None:
+            print(f"Could not load repository {full_repo_name}")
+            continue
 
-        print(f"Processed repo: {repo_name} with score: {info['test_engagement_ratio']}.")
+        pr = githubService.get_pull_request(repo, pull_request_number)
+        if pr is None:
+            print(f"Could not load pull request #{pull_request_number} for {full_repo_name}")
+            continue
 
-    print("Done processing all repositories.")
+        touches_test_files = as_bool(row.get("touches_test_files"))
+        touches_production_files = as_bool(row.get("touches_production_files"))
+        pr_type = get_pr_type(touches_test_files, touches_production_files)
+
+        save_pull_request_data(repo, pr, pr_type)
+        print(f"Processed PR #{pull_request_number} for {full_repo_name}: type={pr_type}")
+
+if __name__ == "__main__":
+    csv_path = os.getenv("PRS_CSV_PATH", "src/data/prs.csv")
+    process_prs_csv(csv_path)
+    print("Done processing PRs from CSV.")

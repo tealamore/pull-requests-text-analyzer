@@ -1,5 +1,5 @@
 import time
-from typing import Iterator
+from typing import Any, Dict, Iterator, List
 import requests
 
 from models import Repository, PullRequest, File
@@ -68,14 +68,14 @@ class GithubService:
 
             response = self._safe_request(url, verb="post", json=payload)
         except Exception as e:
-            csvService.write_error_log(f"Error fetching repository {full_name} : {str(e)}")
+            print(f"Error fetching repository {full_name} : {str(e)}")
             return None
 
         if response is None or not response.json():
             return None
         
         if 'errors' in response.json():
-            csvService.write_error_log(f"Error in GraphQL response for repository {full_name}: {response.json()['errors']}")
+            print(f"Error in GraphQL response for repository {full_name}: {response.json()['errors']}")
             return None
         
         return Repository(response.json()['data']['repository'])
@@ -93,7 +93,7 @@ class GithubService:
             try:
                 response = self._safe_request(url, verb="get", params=params)
             except Exception:
-                csvService.write_error_log(f"Error fetching pull requests for repo {repo.full_name} with params {params}")
+                print(f"Error fetching pull requests for repo {repo.full_name} with params {params}")
                 break
 
             if response is None or not response.json() or type(response.json()) is not list:
@@ -106,8 +106,33 @@ class GithubService:
 
             page += 1
 
+    def get_pull_request(self, repo: Repository, number: int) -> PullRequest | None:
+        url = f"https://api.github.com/repos/{repo.full_name}/pulls/{number}"
+
+        try:
+            response = self._safe_request(url, verb="get")
+        except Exception:
+            print(
+                f"Error fetching pull request #{number} for repo {repo.full_name}"
+            )
+            return None
+
+        if response is None or type(response.json()) is not dict:
+            return None
+
+        return PullRequest(response.json())
+
+    def _get_repo_full_name_from_pr(self, pr: PullRequest) -> str:
+        if pr.base is not None and pr.base.repo is not None and pr.base.repo.full_name:
+            return pr.base.repo.full_name
+        return ""
+
     def get_files(self, pr: PullRequest, per_page: int = 100, page: int = 1) -> Iterator[File]:
-        url = f"https://api.github.com/repos/{pr.base.repo.full_name}/pulls/{pr.number}/files"
+        repo_full_name = self._get_repo_full_name_from_pr(pr)
+        if repo_full_name == "":
+            return
+
+        url = f"https://api.github.com/repos/{repo_full_name}/pulls/{pr.number}/files"
 
         while True:
             params = {
@@ -118,7 +143,7 @@ class GithubService:
             try:
                 response = self._safe_request(url, verb="get", params=params)
             except Exception:
-                csvService.write_error_log(f"Error fetching pull requests for repo {pr.base.repo.full_name} with params {params}")
+                print(f"Error fetching pull requests for repo {repo_full_name} with params {params}")
                 break
 
             if response is None or type(response.json()) is not list:
@@ -133,3 +158,68 @@ class GithubService:
                 yield File(file_data)
 
             page += 1
+
+    def _get_paginated_json(self, url: str, params: Dict[str, Any] | None = None) -> Iterator[Dict[str, Any]]:
+        page = 1
+
+        while True:
+            request_params = dict(params or {})
+            request_params["per_page"] = request_params.get("per_page", 100)
+            request_params["page"] = page
+
+            response = self._safe_request(url, verb="get", params=request_params)
+
+            if response is None or type(response.json()) is not list:
+                break
+
+            items = response.json()
+            if not items:
+                break
+
+            for item in items:
+                yield item
+
+            page += 1
+
+    def get_pull_request_comments(self, pr: PullRequest) -> List[str]:
+        repo_full_name = self._get_repo_full_name_from_pr(pr)
+        if repo_full_name == "":
+            return []
+
+        review_comments_url = f"https://api.github.com/repos/{repo_full_name}/pulls/{pr.number}/comments"
+
+        comments: List[str] = []
+
+        try:
+            for comment in self._get_paginated_json(review_comments_url):
+                body = comment.get("body")
+                if body:
+                    comments.append(body)
+        except Exception:
+            print(
+                f"Error fetching comments for PR #{pr.number} in repo {repo_full_name}"
+            )
+
+        return comments
+
+    def get_pull_request_commit_messages(self, pr: PullRequest) -> List[str]:
+        repo_full_name = self._get_repo_full_name_from_pr(pr)
+        if repo_full_name == "":
+            return []
+
+        url = f"https://api.github.com/repos/{repo_full_name}/pulls/{pr.number}/commits"
+
+        messages: List[str] = []
+
+        try:
+            for commit in self._get_paginated_json(url):
+                commit_data = commit.get("commit", {})
+                message = commit_data.get("message")
+                if message:
+                    messages.append(message)
+        except Exception:
+            print(
+                f"Error fetching commit messages for PR #{pr.number} in repo {repo_full_name}"
+            )
+
+        return messages
