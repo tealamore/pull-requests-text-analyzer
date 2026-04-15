@@ -4,6 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile-dataloader
     command: ["python", "src/calculate.py"]
+    restart: "no"
     depends_on:
       postgres:
         condition: service_healthy
@@ -19,6 +20,30 @@ services:
       MONGODB_URI: mongodb://mongo:27017
       MONGODB_DATABASE: pull_requests
       MONGODB_COLLECTION: pull_request_results
+      SHOULD_SKIP: True
+
+  analysis:
+    build:
+      context: .
+      dockerfile: Dockerfile-analysis
+    gpus: all
+    depends_on:
+      dataloader:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      mongo:
+        condition: service_started
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: pull_requests
+      PGUSER: appuser
+      PGPASSWORD: apppassword
+      MONGODB_URI: mongodb://mongo:27017
+      MONGODB_DATABASE: pull_requests
+      MONGODB_COLLECTION: pull_request_results
+      ANALYSIS_METHOD: siebert
 
   postgres:
     image: postgres:16

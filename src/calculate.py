@@ -1,5 +1,4 @@
 import os
-import re
 from typing import Any, Dict
 
 from models import Repository, PullRequest
@@ -55,7 +54,7 @@ def save_pull_request_data(repo: Repository, pr: PullRequest, pr_type: str) -> N
             )
             return
 
-        sql_record = sqlService.save_pull_request_mapping(
+        sqlService.save_pull_request_mapping(
             repository_name=repo.get_sanitized_name(),
             github_pull_request_id=int(github_pull_request_id),
             pr_type=pr_type,
@@ -118,5 +117,9 @@ def process_prs_csv(csv_path: str) -> None:
 
 if __name__ == "__main__":
     csv_path = os.getenv("PRS_CSV_PATH", "src/data/prs.csv")
-    process_prs_csv(csv_path)
-    print("Done processing PRs from CSV.")
+    skip = bool(os.getenv("SHOULD_SKIP", False))
+    if not skip:
+        process_prs_csv(csv_path)
+        print("Done processing PRs from CSV.")
+    else:
+        print("Skipping execution.")

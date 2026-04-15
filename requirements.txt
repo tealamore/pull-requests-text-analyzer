@@ -2,3 +2,18 @@ requests
 python-dotenv
 psycopg2-binary
 pymongo
+
+# for SentiCR
+scikit-learn
+nltk
+imblearn
+xlrd
+statistics
+argparse
+numpy
+pandas
+openpyxl
+
+# for Siebert
+transformers
+torch
