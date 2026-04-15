@@ -23,10 +23,14 @@ services:
       SHOULD_SKIP: True
 
   analysis:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
     build:
       context: .
       dockerfile: Dockerfile-analysis
-    gpus: all
     depends_on:
       dataloader:
         condition: service_completed_successfully
