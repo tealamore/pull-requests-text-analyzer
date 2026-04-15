@@ -310,31 +310,6 @@ if __name__ == "__main__":
       return scores["compound"]
 
     sentiment_results = analyze_sentiment_per_pull_request(vader_sentiment)
-  elif method == "siebert":
-    import torch
-    from transformers import pipeline
-
-    device = 0 if torch.cuda.is_available() else -1
-    print(f"Using device: {'cuda' if device == 0 else 'cpu'}")
-    sentiment_analysis = pipeline(
-      "sentiment-analysis",
-      model="siebert/sentiment-roberta-large-english",
-      device=device,
-    )
-
-    def siebert_sentiment(text: str) -> float:
-      result = sentiment_analysis(text, truncation=True, max_length=512)[0]
-      label = result["label"]
-      score = result["score"]
-
-      if label == "POSITIVE":
-        return score
-      elif label == "NEGATIVE":
-        return -score
-      else:
-        return 0.0
-      
-    sentiment_results = analyze_sentiment_per_pull_request(siebert_sentiment)
   else:
     print(f"Unknown ANALYSIS_METHOD '{method}', skipping sentiment analysis.")
 
