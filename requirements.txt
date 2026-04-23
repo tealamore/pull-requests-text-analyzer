@@ -13,7 +13,3 @@ argparse
 numpy
 pandas
 openpyxl
-
-# for Siebert
-transformers
-torch

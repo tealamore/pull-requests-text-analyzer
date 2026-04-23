@@ -253,16 +253,16 @@ class SentiCR:
         oracle_data = []
         print("Reading data from oracle..")
 
-        with open("./src/SentiCR/oracle.csv", "r", newline="", encoding="utf-8") as file:
+        with open("./src/SentiCR/output.csv", "r", newline="", encoding="utf-8") as file:
             reader = csv.reader(file)
 
             # Skip header if your CSV has one
             next(reader, None)
 
             for row in reader:
-                if len(row) < 2:
+                if len(row) < 3:
                     continue
-                comments = SentimentData(row[0], row[1])
+                comments = SentimentData(row[0], row[2])
                 oracle_data.append(comments)
 
         return oracle_data
@@ -341,14 +341,14 @@ if __name__ == '__main__':
 
     oracle_data = []
 
-    with open("./src/SentiCR/oracle.csv", "r", newline="", encoding="utf-8") as file:
+    with open("./src/SentiCR/output.csv", "r", newline="", encoding="utf-8") as file:
         reader = csv.reader(file)
         next(reader, None)
 
         for row in reader:
-            if len(row) < 2:
+            if len(row) < 3:
                 continue
-            comments = SentimentData(row[0], row[1])
+            comments = SentimentData(row[0], row[2])
             oracle_data.append(comments)
 
     random.shuffle(oracle_data)
